@@ -1,0 +1,587 @@
+MASTER IMPLEMENTATION PROMPT — Existing Flutter Flipbook Reader: Complete PDF/OCR Parsing, TTS Text Normalization, Stable Karaoke Highlighting, Triple-Tap Vocabulary Notebook, Paste-Text Import, Fullscreen Cover and Regression Tests
+
+ROLE
+Act as a senior Flutter/Dart engineer, GetX architect, PDF/document rendering and OCR engineer, multilingual TTS/STT engineer, text-layout engineer, accessibility specialist, and page-curl interaction engineer.
+
+I already have an existing Flutter Flipbook Reader. Modify the current repository; do not recreate the application from scratch. Audit the existing code, reproduce the bugs, fix their root causes, run tests, and report what actually works. Preserve the existing unified reader UI and its prior requirements unless a change below explicitly overrides them.
+
+Use Flutter and Dart with GetX. Reuse suitable existing parsers, rendering packages, storage, TTS/STT providers, and page-flip code where valid. Verify package APIs and platform capabilities before changing dependencies. Do not substitute mock success responses for real functionality.
+
+PRIORITIES
+P0: Correct parsing, page enumeration and rendering for every source page; add PDF native text extraction plus OCR fallback for scanned/image-only pages.
+P1: Normalize text passed to TTS so markup and decorative symbols are not read aloud, while meaningful numeric operators are spoken correctly.
+P2: Fix karaoke highlighting so only the current word is highlighted, calmly and accurately; add a Transparent highlight mode.
+P3: Add triple-tap vocabulary collection, ordered TXT storage, an editor, CRUD/multi-select, and dictionary enrichment actions.
+P4: Add a Paste Text import path alongside file upload, with a visible input limit and automatic book creation.
+P5: Make the closed hardcover cover full-screen/edge-to-edge in portrait.
+P6: Regression-test existing live speed switching, bookmarks, word-seeking, orientation changes, and both page-flip input methods.
+
+============================================================
+1. REPOSITORY AUDIT AND IMPLEMENTATION RULES
+============================================================
+
+Before editing:
+1. Inspect the repository, Flutter/Dart SDK constraints, current dependencies, GetX controllers, parser pipeline, reader page models, PDF rendering, OCR integration, speech services, karaoke implementation, vocabulary/storage logic, import screen, cover widget, bookmark code, page-flip engine, and existing tests.
+2. Reproduce each reported bug with a real test file or a minimal reproducible fixture.
+3. Identify root cause and the smallest safe changes. Avoid broad rewrites unless the audit shows the existing architecture cannot support the required behavior.
+4. Keep a single authoritative reader state for document/page/reading position. Avoid duplicate current-page indexes that can drift.
+5. Use typed states/errors and cancellation/generation tokens for asynchronous operations. Late callbacks must not overwrite newer document, TTS, OCR, highlight, or page-turn state.
+6. Keep heavy parsing/OCR/pagination off the UI thread where supported. Respect plugin requirements for main-isolate/platform-channel calls.
+7. Do not invent APIs. Check installed package versions, licensing, platform support, model requirements, and real capabilities.
+8. Do not claim any fix is complete until the implementation and tests have run.
+
+The UI, file parsing, TTS/STT, OCR, page mapping, and visual page renderer are separate responsibilities. A PDF page image may be needed to preserve original visual layout, but displaying page screenshots alone is NOT sufficient text parsing for searchable/selectable text, word-level TTS seeking, or karaoke highlighting.
+
+============================================================
+2. P0 — COMPLETE DOCUMENT IMPORT, PDF PAGE ENUMERATION, TEXT EXTRACTION AND OCR
+============================================================
+
+2.1 Required import formats
+Support these input paths:
+- PDF
+- TXT
+- DOCX
+- EPUB
+- Paste Text (new alternative to selecting a file)
+
+If PNG/image import already exists or is offered in the UI, keep it as an image input with a genuine OCR path. Do not misrepresent it as one of the four document formats above.
+
+2.2 File import must process the entire document
+For a PDF with N pages:
+- Read the true source page count.
+- Retain stable IDs/mappings for every source page 1 through N.
+- Render every requested page from the actual PDF source index.
+- Keep all pages navigable in portrait single-page mode.
+- In landscape spread mode, map pages 1–2, then 3–4, then 5–6, and so on.
+- Handle odd counts and the last page without omission or duplication.
+- Previous/next must use deterministic page/spread arithmetic.
+- Do not show a random page or use a demo/sample page after parsing.
+- Do not hardcode the sample content or page numbering from prototype HTML.
+- Never confuse the hardcover cover presentation with source document page 1.
+- Preserve PDF page boundaries by default; do not flatten a ten-page PDF into one arbitrary text flow.
+
+Use a real ten-page fixture with a distinct identifier printed on each page. Verify source page count, page text/render mapping, page order, every next/previous action, and final page. Also test a one-page PDF and an odd-page-count PDF.
+
+2.3 PDF native text extraction plus OCR fallback
+Implement a per-source-page extraction strategy:
+A. First attempt native PDF text extraction using a maintained, compatible parser.
+B. Assess whether extracted text is present and usable. Do not assume that a non-empty string always means the entire page has meaningful text.
+C. For scanned/image-only pages or pages with absent/insufficient native text, invoke a real OCR implementation/provider if available.
+D. Preserve source page boundaries and associate every extracted/OCR text block with the correct PDF source page.
+E. Keep page visual rendering separate from its text layer. It is acceptable to render the source PDF page for visual fidelity, but do not treat the resulting screenshot alone as completed OCR/text parsing.
+F. Provide text bounding boxes or equivalent coordinate mappings from extracted/OCR text when available, enabling selectable text, word hit-testing, TTS start-from-word, and karaoke mapping.
+G. If OCR is unavailable or fails, render the original page if possible, mark that page as having unavailable extracted text, and show a clear recoverable warning. Never replace it with unrelated content or report false OCR success.
+
+OCR requirements:
+- Confirm that an actual OCR library, on-device model, or configured service is installed and called.
+- Check supported OS/platforms, scripts, and languages.
+- Prioritize Hindi and English when supported by the chosen OCR engine; state any other verified language coverage.
+- Do not claim all-language OCR from a dropdown or untested dependency.
+- Do not run OCR unnecessarily on good native PDF text unless needed to recover missing content.
+- Use OCR output in the text/reading model, while preserving the original rendered page.
+- Track page number, text block, reading order, confidence where available, and bounding boxes when provided.
+- Permit retry for failed OCR pages.
+- Clearly distinguish native text extraction, OCR text, and source-page visual rendering in logs/results.
+
+2.4 Other format handling
+TXT:
+- Read the actual selected file; preserve Unicode and paragraphs.
+- Do not ask the user to copy/paste a file's content manually.
+- Keep stable source offsets.
+
+DOCX:
+- Extract the complete supported document body in reading order: headings, paragraphs, lists, tables, supported formatting and images.
+- Preserve the entire content rather than only the first section.
+- Do not promise exact Microsoft Word pagination unless a compatible layout engine truly provides it.
+
+EPUB:
+- Validate the archive.
+- Parse metadata, manifest, spine, ordered chapters, supported XHTML/HTML content, headings, paragraphs, images and navigation metadata.
+- Preserve chapter order and stable source offsets.
+- Sanitize markup; do not execute embedded scripts.
+- Add an actual EPUB fixture/test rather than marking EPUB verified without testing it.
+
+2.5 Metadata and cover
+Extract title, author/creator, subject/subtitle, language, embedded cover, and other available metadata from the source when present.
+- If title is missing, generate a user-friendly fallback such as “Untitled Book — <short timestamp>” or derive one from the filename.
+- If author is missing, use “Unknown author” or omit the author line.
+- Do not invent factual author/metadata values.
+- Metadata availability must not block reading.
+- Never require manual text paste, title, author, or subtitle fields when they can be extracted or safely defaulted.
+
+2.6 Correct text pagination for reflowable sources
+PDF keeps its source page boundaries by default. TXT/EPUB/DOCX may create generated pages using actual text layout and viewport measurements.
+Maintain separate IDs for source pages, content units, generated pages, spreads and source text offsets. When text reflows after a font/viewport change, restore the semantic reading position rather than reusing a stale generated-page index.
+
+============================================================
+3. P1 — UNIFIED SPEECH-TEXT NORMALIZATION FOR TTS
+============================================================
+
+3.1 Protect the original document
+Create a separate speech-normalization layer. Never permanently delete punctuation/symbols from the original stored document or rendered content. The reader should display the original content; only the text sent to TTS should be normalized.
+
+The same normalization rules must apply to extracted PDF text, OCR text, TXT, DOCX, EPUB and pasted text. The normalization output must retain a source-offset map from spoken tokens to the original content so word seeking and karaoke remain accurate.
+
+3.2 Decorative/formatting symbols must not be spoken
+Do not pronounce formatting and decorative symbols as literal names in ordinary prose. Examples include:
+- Markdown emphasis markers: *, **, _, __, backticks where used as formatting.
+- Decorative dash/hyphen separators.
+- Decorative underscores.
+- Bullets or repeated symbols used only for formatting.
+- Unnecessary markup delimiters.
+- Non-semantic decorative symbols.
+
+For example, when punctuation acts only as a separator, “cat-mouse” should be spoken approximately as “cat mouse”, not “cat dash mouse”. Do not announce “asterisk”, “underscore”, “hash”, “backslash” or “dash” in ordinary prose merely because the character appears in the source.
+
+Do not indiscriminately remove meaningful punctuation or destroy sentence boundaries. Periods, commas, question marks, exclamation marks and paragraph boundaries may be converted into natural pauses. Preserve the original visible text.
+
+3.3 Numeric operator rules
+Use context-aware normalization: a special character directly adjacent to digits may be a unary or binary operator, a ratio/fraction separator, or a numeric range rather than decorative punctuation.
+
+At minimum implement and test:
+- “5/10” → spoken naturally as “five out of ten” in a score/ratio context, per the requested default.
+- “5÷10” → “five divided by ten”.
+- “5\10” when used as a numeric separator → normalize as a division/fraction expression and speak naturally; by default use “five out of ten” for a ratio-like expression unless the context marks it as arithmetic.
+- Other fraction/division slash forms, including a fraction slash, should use the configured semantic rule rather than saying “slash”.
+- “5 + 2” → “five plus two”.
+- “5 − 2” or “5-2” when clearly arithmetic → “five minus two”.
+- A leading negative sign in “-5” or “−5” → “negative five” (or the configured equivalent), not “dash five”.
+- A numeric range such as “5–10” → “five to ten” when a range is the intended meaning.
+- An operator between two numbers must be interpreted as an operator according to its type; do not read the operator's glyph name.
+
+Use an explicit tokenizer/normalizer with unit tests. Do not assume every symbol between numbers has the same meaning. Where meaning is ambiguous, apply documented defaults and support a future configurable pronunciation rule.
+
+Treat symbols between ordinary words as formatting/separators when appropriate, while preserving meaningful terms and domain-specific notation. For example, “cat-mouse” should not cause “dash” to be spoken. Do not damage email addresses, URLs, source code or mathematical expressions if the app has an explicitly configured mode for reading those content types; ordinary prose is the default normalization mode.
+
+3.4 Source mapping
+Every normalized spoken token must map to its original source range where possible. A word-seek tap on the visible document must locate the correct normalized spoken token even if its adjacent characters have been removed from TTS text. Normalization must never shift word indexes unpredictably.
+
+============================================================
+4. P2 — FIX DISTRACTING/MULTIPLE KARAOKE HIGHLIGHTS AND ADD TRANSPARENT MODE
+============================================================
+
+4.1 Only one active word at a time
+The current karaoke highlight sometimes flashes in multiple places at once, including different lines or duplicated occurrences of a word, and advances too quickly, making the page distracting.
+
+Fix the state and layout mapping rather than merely reducing the brightness.
+
+Requirements:
+- Exactly one current word/segment ID may be active per TTS session.
+- Do not find all text widgets by matching the same word string and highlight every occurrence.
+- Identify each word by its unique source offset/content-unit/page mapping, not by the word text alone.
+- Invalidate old word highlights when playback advances or a new utterance starts.
+- Ignore late callbacks from cancelled or previous utterances by using an utterance generation/request ID.
+- Rebuild/update only the affected reading content as far as the widget architecture permits.
+- Never leave one highlight on a previous line while applying another on a later line.
+- Do not flash the same word in multiple lines/pages because a page was duplicated or rendered in both active and cached layers. Hidden/cached render layers must not show active karaoke decoration.
+- A landscape spread must map the active word to the correct side and source page.
+- When the spoken word belongs to a different page, transition to that page using the shared reader navigation state, then highlight the correct word there.
+
+4.2 Use actual progress timing
+Use real provider word-boundary/source-range callbacks where available. If the provider lacks word-level callbacks, use manageable sentence/phrase segments and a documented fallback. Do not use a fast fixed timer that advances words independently of real speech.
+
+The active word must remain highlighted for the period that corresponds reasonably to the spoken word. Avoid unnecessarily flashy pulsing, strobing, or multiple-color animation. Prefer a stable, readable highlight with a subtle transition.
+
+4.3 Add “Transparent” highlight option
+In the existing long-press reader settings panel, under highlight/color settings, add:
+- Yellow, Orange, Red, Pink, Green, Blue, Purple, Cyan or the app's supported color set.
+- Transparent / No Highlight.
+
+“Transparent / No Highlight” means TTS continues normally but karaoke highlight decoration is invisible. It must NOT stop TTS, disable speech progress, or remove the source text.
+
+Keep highlight color independent of Paper, Sepia and Midnight page themes. Persist the choice and make the setting identical in portrait and landscape.
+
+When switching from a visible color to Transparent, immediately clear the existing visible decoration. Switching back to a color should highlight only the current active word, never all previous words.
+
+4.4 Karaoke tests
+Use a controlled provider that emits known progress ranges. Verify that only the exact current source word is highlighted, a previous highlight is removed, repeated identical words elsewhere remain unhighlighted, stale callbacks are ignored, and Transparent mode renders no highlight while playback still proceeds.
+
+============================================================
+5. P3 — TRIPLE-TAP VOCABULARY COLLECTION AND BOOK-NAMED TXT NOTEBOOK
+============================================================
+
+5.1 Gesture meanings
+Implement distinct text gestures:
+- Double-tap on a word: start/seek TTS from that exact word (existing required behavior).
+- Triple-tap on a word: add that selected word to the current book's vocabulary notebook in the order selected.
+
+A triple tap must NOT also perform the double-tap seek action. Flutter's default double-tap callback may fire before the third tap; implement a custom tap-sequence/gesture arbiter that can distinguish double from triple tap reliably. Use a configurable timing window, cancel the pending double-tap action when a valid triple tap is detected, and avoid allowing a delayed triple-tap to cause two actions. Do not make normal page-flip, text selection, long press, or controls trigger vocabulary capture accidentally.
+
+If a triple tap is not reliably supported on a target platform, provide an accessible equivalent (for example, a word-selection menu with “Save to Vocabulary”) while retaining the specified triple-tap behavior where supported.
+
+5.2 Identify the correct word
+Resolve the touched word using real text-layout hit testing and stable source offsets. Account for current font, line height, text direction, zoom/pan transformations and OCR bounding-box mappings where available. Do not infer words from rough character-count estimates.
+
+On successful triple tap:
+- Capture the exact word, preserving the original spelling/capitalization for display.
+- Normalize a comparison key for duplicate detection without changing the display form.
+- Record its source document, page/chapter and source position where available.
+- Append it in the chronological order in which the user selected words.
+- Provide restrained success feedback without interrupting ongoing TTS unnecessarily.
+
+If a word has already been saved, inform the user and offer “Keep existing” or “Add another occurrence”. Do not silently overwrite an existing record. Preserve chronology and any source-location information.
+
+5.3 Create a same-title TXT file
+For each book, create a persistent vocabulary TXT file based on the sanitized book title, for example:
+“<BookTitle>_Vocabulary.txt”
+
+Use application-managed documents/storage and provide a clear open/export/share action so the user can obtain the actual TXT file. Handle filenames safely, avoid path traversal, and resolve title collisions deterministically. Persist the vocabulary data so it survives app restarts and book closure.
+
+Use a stable internal data model as the source of truth and serialize it to TXT. Do not rely on editing a temporary in-memory string with no persistence.
+
+Suggested initial TXT format:
+
+Vocabulary — <Book Title>
+Source document: <original document name>
+
+1. Endeavor
+2. Selfish
+3. ...
+
+---
+Word Notes / Dictionary Results
+
+[Enrichment records are appended below the numbered vocabulary list.]
+
+The numbering must follow the current order of saved vocabulary entries. Dictionary notes must be stored separately from the numbered word-list section so deleting/renumbering words does not corrupt the enrichment text.
+
+5.4 Edit Vocabulary screen
+Add an “Edit Vocabulary” action in the reader interface, accessible from the top/toolbar area after vocabulary has been collected. When the user presses Stop in the reading player, make this action easy to find; do not remove it when the player is stopped. Opening the action must open an in-app editor/view for the actual saved book-named TXT notebook.
+
+The screen should support:
+- Displaying the numbered word list in the order captured.
+- Selecting one word.
+- Selecting multiple individual words.
+- Range selection such as entries 5–10.
+- Select All and Clear Selection.
+- Search within the list if feasible.
+- Viewing the source page/location where a word was captured, if available.
+- Editing a word entry where appropriate.
+- Saving changes to the actual persisted notebook/TXT.
+- Exporting/sharing the TXT.
+
+5.5 CRUD and clipboard operations
+For selected entries, provide:
+- Copy.
+- Cut.
+- Delete.
+- Edit/rename, where appropriate.
+- Cancel selection.
+
+After deletion or reordering, renumber only the current vocabulary-list section sequentially. Example: if entries 1–5 are deleted from a ten-word list, former entries 6–10 must become 1–5. Preserve each surviving entry's stable ID and related source metadata; do not corrupt note relationships.
+
+When a vocabulary entry is removed, handle its linked dictionary enrichment explicitly: either remove the associated enrichment or mark it as retained/orphaned with a clear user choice. Never leave a note silently linked to the wrong word.
+
+Require confirmation for destructive bulk delete operations. Clipboard actions must use supported Flutter clipboard APIs and provide feedback.
+
+============================================================
+6. P4 — LOOK UP SYNONYMS, ANTONYMS, MEANINGS AND EXAMPLE SENTENCES
+============================================================
+
+6.1 Selection-based actions
+In the Edit Vocabulary screen, allow the user to select one or more vocabulary words and choose the information required.
+
+Offer individual options:
+- Word meaning.
+- Synonyms.
+- Antonyms.
+- Example sentence showing correct usage.
+
+Offer combinations:
+- Synonyms + example sentence.
+- Antonyms + example sentence.
+- Meaning + example sentence.
+- Synonyms + antonyms + meaning + example sentence.
+
+For multiple selected words, clearly state whether the action will look up each word separately or create a collective output. Preserve a sensible entry-by-entry association.
+
+6.2 Internet lookup architecture
+Use a real dictionary/lexical API or an explicitly configured internet-backed lookup service. Use a service abstraction so the provider can be replaced. Do not invent dictionary results or pretend internet lookup works without a configured provider.
+
+- Keep API secrets out of Flutter source code; use a suitable backend if the service requires secrets.
+- Respect rate limits and provider terms.
+- Cache results appropriately.
+- Handle network failures, unavailable results and unsupported words.
+- Show the lookup source/URL when provided by the service.
+- Never claim a result is verified when no source result was received.
+- If the service is unavailable, let the user retry or save the word without enrichment.
+
+Because the learning use case is an English reader for Hindi-native users, provide a preference for explanations in English or Hindi where the chosen data provider supports them. Do not fabricate Hindi translations where no translation result exists.
+
+6.3 Append results to the same TXT file
+After the user requests enrichment and the lookup succeeds, append/update a separate “Word Notes / Dictionary Results” section after the numbered vocabulary list in the same book-named TXT file.
+
+Each record should include:
+- Word.
+- Requested information type.
+- Meaning/definition, if returned.
+- Synonyms, if returned.
+- Antonyms, if returned.
+- Example sentence, if returned.
+- Lookup source and retrieval date where available.
+
+Do not overwrite the original selected word or the chronological list. If refreshed results arrive, update the matching enrichment record instead of appending duplicate blocks indefinitely, unless the user explicitly chooses to keep history.
+
+After a bulk delete or renumber, enrichments must remain associated with the correct stable word record. Serializing to TXT must remain deterministic and readable.
+
+============================================================
+7. P5 — ADD “COPY & UPLOAD” WITH FILE UPLOAD OR PASTE TEXT
+============================================================
+
+7.1 Replace the single-path import interaction
+On the library/import screen, use a primary action named “Copy & Upload” (or an equivalent concise label approved by the existing design system). Tapping it should offer two clear choices:
+1. “Upload File” — select a supported PDF, TXT, DOCX or EPUB using the platform file picker.
+2. “Paste Text” — open a dedicated text-entry screen for text copied from ChatGPT, a website, email, a note, or another application.
+
+Do not require the user to choose a file if they want to paste text. Do not require paste-text users to first create a local TXT file.
+
+7.2 Paste Text screen
+Show:
+- Title: “Paste Text to Create a Book”.
+- A large multiline text field.
+- Paste from Clipboard action using the platform clipboard API, where permission/platform behavior allows.
+- Character/word/line count.
+- Clear Text action.
+- A clearly defined maximum input size.
+- Continue/Create Book action, disabled when the content is empty.
+
+Use a configurable safe limit. Initial suggested limits: up to 10,000 words OR 1,000 non-empty lines, whichever is reached first. Show this clearly in the UI; do not silently truncate content. If the limit is exceeded, explain the limit and offer the user the option to shorten the text or import it as a TXT file. Keep the limits configurable in one place.
+
+Preserve Unicode and Indic scripts, paragraph breaks, punctuation and text order. Validate the pasted text and handle very long content without freezing the UI.
+
+7.3 Create book from pasted text
+When the user continues:
+- Create an internal document record from the pasted text.
+- Choose a usable title from any explicitly supplied title if the current app offers an optional field; otherwise generate a unique, human-readable fallback such as “Untitled Book — <short timestamp>”.
+- Use “Unknown author” when no author is provided; do not invent a real person.
+- Create a text content model with stable source offsets.
+- Paginate it according to the current reading layout and text settings.
+- Generate the closed hardcover presentation.
+- Open directly into the existing reader workflow.
+- Persist the source text and metadata so the book can be reopened.
+
+Do not ask for manual author or subtitle entry as a mandatory step. An optional edit-metadata action may be offered later.
+
+7.4 File import and paste import must converge
+Both routes must produce the same normalized internal document model, pagination service input, metadata model, reader state and persistence lifecycle. Do not build a second reader just for pasted text.
+
+============================================================
+8. P6 — CLOSED HARDCOVER MUST FILL THE PORTRAIT SCREEN
+============================================================
+
+The closed hardcover currently appears as a small centered book with excessive surrounding background/padding.
+
+Fix the actual cover-layout constraints.
+
+Requirements:
+- In the initial portrait 9:16-oriented state, the closed hardcover/front-cover presentation must occupy essentially the full available viewport.
+- Remove unnecessary outer margins, large container padding and the 30–40% blank background surrounding the cover.
+- Target edge-to-edge coverage, with 0–1% intentional inset where genuinely required; preferably use full-bleed coverage within the available display area.
+- Use immersive system UI settings where appropriate, subject to OS safe-area and system-navigation constraints.
+- Do not distort the cover aspect ratio.
+- Do not crop important title, author or cover details. Use a responsive full-bleed cover composition or suitable BoxFit/positioning strategy.
+- If the cover is generated by the app, design it on a canvas sized for the available viewport and place text within safe visual regions.
+- If using extracted cover artwork with a different aspect ratio, preserve its proportions and use a documented fit/crop strategy that does not lose critical content.
+- Ensure the layout is still responsive on devices whose actual aspect ratio is not exactly 9:16.
+- Do not apply this full-screen rule to force the landscape double-page spread into a portrait layout. It applies to the closed cover in the initial portrait state.
+
+Acceptance: open the closed-cover screen on a phone and verify that no large blank side/top/bottom padding remains. The cover should visually fill the screen, not float inside a small card.
+
+============================================================
+9. P7 — RETAIN AND REGRESSION-TEST EXISTING SPEECH AND READER FEATURES
+============================================================
+
+Keep the earlier requirements working while implementing the new fixes.
+
+9.1 TTS speed
+The bottom floating player has the speed value, previous/page, play/pause and next/page controls. Tapping or long-pressing the speed opens a compact selector above the player. Supported speed options must be mapped to the actual TTS provider. Changing speed during active speech must update live where supported or safely restart from the confirmed current word/source offset. Do not only update the UI chip.
+
+9.2 Word seeking
+- Double-tap on a visible word starts TTS from that exact word.
+- Triple-tap is reserved for vocabulary capture and must not trigger the double-tap action as well.
+- Keep stable source offsets across zooming, font changes, pagination and orientation.
+- A tap on a word/line must not trigger a page flip or long-press menu unintentionally.
+
+9.3 Continuous playback
+Ordinary Play follows the existing required/default start rule (begin at the document's first readable word when starting a new full reading session). After playback starts, continue automatically through the complete document. At each page boundary, advance to the correct next page/spread and keep karaoke synchronized. Do not ask for confirmation at each boundary. At the final word, enter a stable completed state.
+
+When a user explicitly selects a word to seek, that explicit selection overrides the normal start position and reading continues from there.
+
+9.4 Bookmarks
+- A fresh document has no saved-progress bookmark.
+- Save meaningful confirmed reading position after committed turns and appropriate TTS progress checkpoints.
+- Closing the book saves the canonical source position and displays the bookmark ribbon only if valid progress exists.
+- Reopening restores the saved position.
+- Cancelled page flips must not commit false positions.
+- Changing orientation/font/pagination must not lose the semantic position.
+
+9.5 Orientation and page flip
+Preserve portrait single-page and landscape two-page reading modes with equal left/right space in the landscape spread. Physical rotation and orientation actions must use the same transition logic. Preserve the selected page.
+
+Both next/previous buttons and all supported touch grab zones must use the same real page-flip engine:
+- Top-right, middle-right and bottom-right: forward turn.
+- Top-left, middle-left and bottom-left: backward turn.
+The curl should respond to the finger during dragging, with a convincing fold, page shadows, correct direction, commit/cancel behavior and accurate page state. A plain slide is not an acceptable substitute. Test both orientations.
+
+============================================================
+10. DATA MODELS AND SOURCE-OF-TRUTH REQUIREMENTS
+============================================================
+
+Use one authoritative model for reading progress and source mapping. Adapt names to the existing project.
+
+DocumentRecord:
+- documentId
+- original file reference or persisted pasted text reference
+- title/author/metadata
+- source format
+- page/content-unit count
+- isReflowable
+- parse/OCR status and warnings
+- saved reading position
+- vocabulary notebook reference
+
+SourcePage / ReadingUnit:
+- stable source ID
+- original source page or chapter
+- extracted text/blocks
+- text bounding boxes when available
+- source offsets
+- render reference for visual PDF page
+- extraction origin: native text, OCR, pasted text, TXT, DOCX, EPUB
+
+GeneratedReaderPage:
+- stable generated ID
+- source page or content-range mapping
+- current layout metadata
+- word/line hit-testing mapping
+
+CanonicalReadingPosition:
+- document ID
+- source unit ID
+- stable character/word offset
+- source page index when applicable
+- generated page ID when applicable
+- current visible page/spread
+
+VocabularyEntry:
+- stable entry ID
+- word display form
+- normalized comparison form
+- insertion order/time
+- source document/page/text offset where available
+- optional dictionary-enrichment IDs
+
+SpeechToken:
+- original source range
+- normalized spoken text range
+- token kind (word, pause, operator, punctuation/formatting)
+- target reading position
+
+Do not use a displayed page number or the word string alone as the sole identifier for source positions, karaoke, or vocabulary entries.
+
+============================================================
+11. MANDATORY TESTS AND ACCEPTANCE CRITERIA
+============================================================
+
+A. PDF/OCR:
+- Ten-page digital PDF: true count is 10; each rendered page is correct and in order.
+- Ten-page scanned PDF: each page is rendered; OCR is actually invoked on image-only/insufficient-text pages when configured; recognized text is mapped to the correct source page.
+- Verify first, middle and last page, next/previous, portrait navigation and landscape pairs.
+- Verify OCR failure is clearly reported without replacing the visual page with random content.
+
+B. TXT/DOCX/EPUB/Paste:
+- Entire file content is preserved in reading order.
+- Unicode, Hindi text and paragraphs survive processing.
+- EPUB gets an actual test fixture; do not claim EPUB is verified if it was not tested.
+- Pasted text respects the stated cap, reports counts and becomes a persistent book without mandatory author/subtitle forms.
+
+C. Speech normalization:
+Test at least:
+- “cat-mouse” — do not speak the word “dash”.
+- “5/10” — “five out of ten” in the default ratio context.
+- “5÷10” — “five divided by ten”.
+- “5 + 2” — “five plus two”.
+- “-5” — “negative five”.
+- “5–10” — “five to ten” when recognized as a range.
+- Markdown asterisks/underscores around prose are not spoken.
+- Visible source text remains unchanged.
+- Spoken tokens still map to their correct source words.
+
+D. Karaoke:
+- Exactly one active word ID at a time.
+- No duplicate highlight of the same string on another line/page.
+- Old highlight removed on progress or seek.
+- Stale TTS callbacks ignored.
+- Highlight rate tracks actual provider progress rather than a fast unrelated timer.
+- Transparent mode hides highlight only; playback continues.
+- The highlight color persists correctly across page turns and orientation changes.
+
+E. Vocabulary:
+- Double-tap seeks TTS to the selected word.
+- Triple-tap saves the word once in the chronological notebook and does not trigger double-tap seeking.
+- Different words append in the correct order.
+- Duplicate handling is explicit.
+- Edit Vocabulary opens the persistent book-named TXT notebook.
+- Select All, individual selection, range selection, copy, cut, delete and edit work.
+- Removing entries renumbers the remaining vocabulary list sequentially.
+- Enrichment records remain linked to the correct stable word entry.
+- Online lookup results are saved only when actually returned; source/unavailable status is handled honestly.
+- The TXT file survives restarting the app and can be exported/shared.
+
+F. Fullscreen cover:
+- Portrait cover uses essentially the entire available viewport with no large blank padding.
+- Important title/author artwork is not distorted or inadvertently cropped.
+- Layout adapts to real device proportions and safe areas.
+
+G. Existing functionality:
+- Live TTS speed switching and upward speed popup.
+- Correct bookmark and resume position.
+- Automatic sequential reading across page boundaries.
+- Correct double-tap-to-seek behavior.
+- Six edge/corner drag zones and arrow-driven natural page-turn animations.
+- Portrait/landscape feature parity.
+
+Use unit tests, widget tests, integration tests, real sample files and a real-provider smoke test when the environment allows. Clearly label mocked tests. Do not claim device-level OCR/TTS/animation verification if only unit tests ran.
+
+============================================================
+12. IMPLEMENTATION ORDER
+============================================================
+
+1. Audit and reproduce bugs; report root causes and relevant files.
+2. Fix complete source-page enumeration and rendering for PDF and all formats.
+3. Integrate native PDF text extraction plus OCR fallback and source-coordinate mapping.
+4. Implement the shared speech-text normalizer and its source-offset mapping.
+5. Fix karaoke to a single canonical active word; add Transparent highlight mode.
+6. Implement gesture arbitration for double-tap seek versus triple-tap vocabulary capture.
+7. Implement persistent book-named TXT vocabulary storage and editor/CRUD.
+8. Integrate sourced lexical lookup/enrichment and append it to the TXT notebook.
+9. Add Upload File / Paste Text import paths with a configurable enforced text/line limit.
+10. Make the closed hardcover full-screen in portrait.
+11. Run regression tests for speed switching, bookmarks, page flipping, and orientation.
+12. Run formatting, Flutter analysis, relevant unit/widget/integration tests and available platform builds.
+
+Do not stop after creating interfaces or placeholder screens. Implement the behavior that can be supported in the current project. When a component requires an unavailable OCR model, online API, native capability, or test device, identify the exact dependency/blocker and expose a proper error/configuration path instead of faking success.
+
+============================================================
+13. FINAL REPORT
+============================================================
+
+After changes, provide:
+1. Root cause of each reproduced issue.
+2. Files created and modified.
+3. PDF source-page counts verified and whether OCR was actually run.
+4. OCR engine/provider, supported languages, and limitations.
+5. Speech-normalization rules and representative before/after examples.
+6. How single-word karaoke state and Transparent mode work.
+7. Triple-tap vocabulary workflow, TXT file location, editor operations and export behavior.
+8. Dictionary/online lookup provider and its actual verified capabilities.
+9. Paste Text cap and fallback metadata behavior.
+10. Fullscreen-cover layout changes.
+11. Test commands and actual pass/fail results.
+12. Any tests not run and the exact reason.
+13. Remaining limitations.
+
+DEFINITION OF DONE
+The PDF reader displays every real source page in correct order; OCR supplies text for scanned pages when a real OCR engine is available; TTS ignores decorative symbols while speaking numeric operators according to context; karaoke never leaves multiple stale word highlights and can be made transparent; triple-tapped words are saved in chronological order to a persistent book-named TXT notebook with editing, CRUD, selection and real sourced dictionary enrichment; users can upload a file or paste text to create a book; the portrait hardcover fills the screen; and existing speed, bookmark, word-seek, orientation and natural page-flip behavior remains functional.
+
+Do not mark this task complete unless the corresponding code was implemented and the relevant verification actually ran.

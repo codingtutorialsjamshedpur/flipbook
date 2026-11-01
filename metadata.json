@@ -1,0 +1,6 @@
+{
+  "name": "StoryFlip",
+  "description": "Interactive Flipbook Document Reader & Cinematic Storyboard Studio with realistic 3D page curl physics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
